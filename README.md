@@ -39,6 +39,8 @@ La baja lógica se representa mediante `activo: false` y una fecha en `fecha_baj
 |---|---|
 | `app.js` | Conexión a Atlas, definición de esquemas y demostración CRUD |
 | `reset.js` | Utilidad auxiliar para modificar los datos después de las pruebas; ver sus limitaciones más abajo |
+| `backup_tpi.ps1` | Respaldo completo de la base remota mediante mongodump |
+| `restauracion_tpi.ps1` | Recuperación de datos mediante mongorestore |
 | `package.json` | Configuración y dependencias del proyecto |
 | `package-lock.json` | Versiones de las dependencias para reproducir la instalación |
 
@@ -112,6 +114,87 @@ Actualmente realiza estas acciones:
 **Esta utilidad no recupera exactamente el estado anterior ni reemplaza un respaldo.** No conserva los valores previos y puede afectar registros ajenos a la última ejecución.
 
 Su eliminación física de clientes debe corregirse para cumplir con la regla de baja lógica del TPI.
+
+## Respaldo y recuperación
+
+Se incluyen dos scripts de PowerShell que utilizan MongoDB Database Tools. Se ejecutan de forma independiente del script de Node.js.
+
+### Requisitos
+
+- PowerShell.
+- MongoDB Database Tools instalado y disponible en el PATH.
+- Credenciales válidas y acceso de red autorizado en Atlas.
+
+Comprobar las herramientas:
+
+```powershell
+mongodump --version
+mongorestore --version
+```
+
+La conexión se configura en la variable `$uri` de cada archivo `.ps1`. Estos scripts no leen automáticamente el archivo `.env` utilizado por Node.js.
+
+### Crear un respaldo
+
+Desde PowerShell, ubicado en la carpeta del proyecto:
+
+```powershell
+.\backup_tpi.ps1
+```
+
+El script respalda toda la base `restaurante_tpi`, incluyendo documentos activos e inactivos. Crea una carpeta con la fecha y hora de ejecución:
+
+```text
+resguardos_tpi/<YYYY-MM-DD_HH-mm-ss>/restaurante_tpi/
+```
+
+Dentro se generan archivos `.bson` y `.metadata.json` para las colecciones. El script comprueba que `mongodump` esté disponible y verifica su código de salida para informar posibles errores.
+
+La ejecución es manual: el script automatiza los pasos del respaldo, pero no configura una programación periódica.
+
+### Restaurar un respaldo
+
+Para seleccionar automáticamente el respaldo más reciente:
+
+```powershell
+.\restauracion_tpi.ps1
+```
+
+Para seleccionar un respaldo específico, indicar el nombre completo de su carpeta:
+
+```powershell
+.\restauracion_tpi.ps1 -Fecha "2026-10-25_22-58-16"
+```
+
+El script busca los respaldos dentro de `resguardos_tpi`, muestra la carpeta seleccionada y verifica su existencia antes de ejecutar `mongorestore`.
+
+Sin el parámetro `-Fecha`, selecciona la carpeta con el nombre más reciente según el formato de fecha y hora generado por el script de backup.
+
+La restauración conserva la base de destino `restaurante_tpi` y no utiliza `--drop`. No elimina las colecciones existentes ni sobrescribe documentos con el mismo `_id`; estos pueden generar errores de clave duplicada.
+
+Si Windows bloquea la ejecución:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\restauracion_tpi.ps1"
+```
+
+También puede indicarse un respaldo específico:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\restauracion_tpi.ps1" -Fecha "2026-10-25_22-58-16"
+```
+
+### Política de ejecución de PowerShell
+
+Si Windows bloquea los scripts, pueden ejecutarse con esta opción para el proceso correspondiente:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\backup_tpi.ps1"
+```
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\restauracion_tpi.ps1"
+```
 
 ## Consultas complementarias
 
