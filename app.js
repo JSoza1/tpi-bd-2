@@ -7,7 +7,7 @@ import 'dotenv/config';
 import { createInterface } from 'node:readline/promises';
 
 // CADENA DE CONEXIÓN OBTENIDA DESDE VARIABLE DE ENTORNO
-const CONNECTION_STRING = process.env.MONGODB_URI;
+const CONNECTION_STRING = process.env.MONGODB_URI+'restaurante_tpi'; // Se agrega el nombre de la base de datos
 
 // VALIDACIÓN PREVENTIVA DE CREDENCIALES DE CONEXIÓN
 if (!CONNECTION_STRING) {
