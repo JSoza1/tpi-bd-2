@@ -1,17 +1,19 @@
 // IMPORTACIÓN DE LA LIBRERÍA MONGOOSE
 // Esto nos permite utilizar metodos como mongoose.connect(), mongoose.Schema, mongoose.model(), etc.
 import mongoose from 'mongoose';
-
 // CARGA DE VARIABLE DE ENTORNO
 import 'dotenv/config';
+// IMPORTACIÓN DE LA LIBRERÍA READLINE PARA INTERACTUAR CON EL USUARIO
+import { createInterface } from 'node:readline/promises';
 
-// CADENA DE CONEXIÓN A LA DB, OBTENIDA DESDE VARIABLE DE ENTORNO
+// CADENA DE CONEXIÓN OBTENIDA DESDE VARIABLE DE ENTORNO
 const CONNECTION_STRING = process.env.MONGODB_URI;
 
 // VALIDACIÓN PREVENTIVA DE CREDENCIALES DE CONEXIÓN
 if (!CONNECTION_STRING) {
   console.error('Error: La variable de entorno MONGODB_URI no está definida en el archivo .env');
-  // Salida del proceso con código de error 1 para indicar fallo en la ejecución
+  // Termina el programa para evitar intentar conectar sin la URI.
+  // Por convención, un código distinto de 0 indica que terminó con error.
   process.exit(1);
 }
 
@@ -23,18 +25,21 @@ if (!CONNECTION_STRING) {
 const clienteSchema = new mongoose.Schema({
   nombre: { 
     // Tipo de dato String para el campo nombre
-    type: String, 
+    type: String,
+    // Validación para asegurar que el nombre no esté vacío
+    trim: true,
     // Validación para asegurar que el nombre no esté vacío
     required: true 
   },
   telefono: {
     type: String,
+    trim: true,
     required: true
   },
   // Objeto embebido para la dirección del cliente
   direccion: {
-    calle: { type: String, required: true },
-    numero: { type: String, required: true }
+    calle: { type: String, required: true, trim: true },
+    numero: { type: String, required: true, trim: true }
   },
   // Baja lógica true = activo, false = dado de baja
   activo: { 
@@ -47,6 +52,7 @@ const clienteSchema = new mongoose.Schema({
     default: null 
   }
 }, { 
+  // timestamps: true agrega automáticamente los campos createdAt y updatedAt a cada documento.
   timestamps: true 
 });
 
@@ -54,18 +60,25 @@ const clienteSchema = new mongoose.Schema({
 // Representa los platos del menú del restaurante
 const platoSchema = new mongoose.Schema({
   nombre: { 
-    type: String, 
+    type: String,
+    trim: true,
     required: true 
   },
   descripcion: { 
     type: String
   },
   categoria: { 
-    type: String 
+    type: String,
+    trim: true,
+    required: true
   },
   precio: { 
-    type: Number, 
-    required: true 
+    type: Number,
+    required: true,
+    // Exige que el precio sea un número positivo mayor a cero
+    min: 1,
+    // Validación para asegurar que el precio sea un número entero
+    validate: Number.isInteger
   },
   activo: { 
     type: Boolean, 
@@ -92,23 +105,44 @@ const pedidoSchema = new mongoose.Schema({
   },
   fecha: { 
     type: Date, 
-    default: Date.now 
+    default: Date.now,
+    required: true
   },
   direccion_entrega: {
-    calle: { type: String, required: true },
-    numero: { type: String, required: true }
+    calle: { type: String, required: true, trim: true },
+    numero: { type: String, required: true, trim: true }
   },
   // Embedding: Lista de items del pedido, cada item contiene información del plato y cantidad.
-  items: [{
-    // Linking: Referencia al plato que se está pidiendo
-    plato_id: mongoose.Schema.Types.ObjectId,
-    nombre: { type: String, required: true },
-    precio_unitario: Number,
-    cantidad: Number
-    // Nota: En el campo items, se hace un patron hibrido, ya que se almacena el plato_id (linking) y también se embeben los datos del plato (nombre, precio_unitario, cantidad) para mantener un registro histórico del pedido. Porque si el plato cambia de nombre o precio en el futuro, el pedido original no se ve afectado.
-  }],
-  total: Number,
-  estado: String,
+  items: {
+    type: [{
+      // Linking: Referencia al plato que se está pidiendo
+      plato_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Plato', required: true },
+      nombre: { type: String, required: true, trim: true },
+      precio_unitario: {
+        type: Number,
+        required: true,
+        min: 1,
+        validate: Number.isInteger
+      },
+      cantidad: {
+        type: Number,
+        required: true,
+        min: 1,
+        validate: Number.isInteger
+      }
+      // Nota: En el campo items, se hace un patron hibrido, ya que se almacena el plato_id (linking) y también se embeben los datos del plato (nombre, precio_unitario, cantidad) para mantener un registro histórico del pedido. Porque si el plato cambia de nombre o precio en el futuro, el pedido original no se ve afectado.
+    }],
+    // Mongoose pasa los ítems del pedido a esta función; solo acepta la lista si tiene al menos uno.
+    // El operador ?. evita un error si items no existe o es null.
+    validate: items => items?.length > 0
+  },
+  total: { type: Number, required: true, min: 1 },
+  estado: {
+    type: String,
+    required: true,
+    // Validación para asegurar que el estado del pedido sea uno de los valores permitidos
+    enum: ['pendiente', 'en_preparacion', 'entregado', 'cancelado']
+  },
   activo: { 
     type: Boolean, 
     default: true 
@@ -130,92 +164,104 @@ const Cliente = mongoose.model('Cliente', clienteSchema, 'clientes');
 const Plato = mongoose.model('Plato', platoSchema, 'platos');
 const Pedido = mongoose.model('Pedido', pedidoSchema, 'pedidos');
 
-// Funcion asíncrona para ejecutar las operaciones CRUD, permite el uso de await para esperar la resolución de promesas
+// Función asíncrona para ejecutar las operaciones CRUD sobre la colección clientes.
 async function ejecutarCRUD() {
-  // Manejo de errores con try-catch-finally
+  // Creación de la interfaz de lectura para interactuar con el usuario desde la consola.
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+
+  // Manejo de errores con try-catch-finally.
   try {
     // CONEXIÓN A LA BASE DE DATOS
     await mongoose.connect(CONNECTION_STRING);
     console.log('Conexión exitosa a MongoDB Atlas');
 
-    // CREATE (Colección: Clientes)
-    console.log('\n--- 1. CREATE (Colección: Clientes) ---');
-    // Creación de un nuevo cliente utilizando el modelo Cliente y el método create()
-    // Se usa await para esperar la confirmación de que el cliente fue creado, antes de continuar con el código
-    const nuevoCliente = await Cliente.create({
-      nombre: 'Sofía Martínez',
-      telefono: '+54 9 11 9999-8888',
-      direccion: { 
-        calle: 'Av. Corrientes', 
-        numero: '1234' 
-      },
-      activo: true,
-      fecha_baja: null
-    });
-    // Se imprime en consola el ID del nuevo cliente creado, que es generado automáticamente por MongoDB
-    console.log('Nuevo cliente registrado con ID:', nuevoCliente._id);
+    // BUCLE PRINCIPAL DEL PROGRAMA
+    while (true) {
+      console.log('\n--- CRUD de clientes ---');
+      console.log('1. CREATE - Registrar cliente');
+      console.log('2. READ - Consultar clientes activos');
+      console.log('3. UPDATE - Modificar cliente');
+      console.log('4. DELETE - Baja lógica de cliente');
+      console.log('0. Salir');
+      // Solicita al usuario que elija una opción y la almacena en la variable opcion.
+      const opcion = (await readline.question('Elegí una opción: ')).trim();
+      // Si el usuario elige '0', se rompe el bucle y se sale del programa.
+      if (opcion === '0') break;
 
-    // READ (Colección: Platos)
-    console.log('\n--- 2. READ (Colección: Platos) ---');
-    // Filtro activo para respetar la baja lógica
-    const platosActivos = await Plato.find({ activo: true });
-    // Se imprime en consola la cantidad de platos activos encontrados y sus detalles
-    console.log(`Se encontraron ${platosActivos.length} platos disponibles en el menú.`);
-    console.log('Platos activos:', platosActivos);
-
-    // UPDATE (Colección: Platos)
-    console.log('\n--- 3. UPDATE (Colección: Platos) ---');
-    // Se busca un plato activo para actualizar su precio, se utiliza findOne() para obtener un solo documento
-    const platoActualizacion = await Plato.findOne({ activo: true });
-    
-    // Si se encuentra un plato activo, se actualiza su precio sumando 500 al precio actual utilizando updateOne()
-    if (platoActualizacion) {
-      const updateResult = await Plato.updateOne(
-        // Se utiliza el ID del plato encontrado para identificar el documento a actualizar
-        { _id: platoActualizacion._id },
-        // Se utiliza $set para actualizar el campo precio del plato, sumando 500 al precio actual
-        { $set: { precio: platoActualizacion.precio + 500 } }
-      );
-      
-      // Se imprime en consola la confirmación de la actualización y los precios antes y después de la actualización
-      console.log('Confirmación de actualización del plato en la Base de Datos:', updateResult);
-      console.log(`Plato '${platoActualizacion.nombre}': precio anterior $${platoActualizacion.precio}`);
-      console.log(`nuevo precio $${platoActualizacion.precio + 500}`);
-    
-    // Si no se encuentra ningún plato activo, se imprime un mensaje indicando que no hay platos para actualizar
-    } else {
-      console.log('No se encontraron platos activos para actualizar.');
-    }
-
-    // DELETE - Utilizando Baja Lógica (Colección: Pedidos)
-    console.log('\n--- 4. DELETE - Baja Lógica (Colección: Pedidos) ---');
-    // Se busca un pedido activo para darlo de baja lógicamente, se utiliza findOne() para obtener un solo documento
-    const pedidoADarDeBaja = await Pedido.findOne({ activo: true });
-    
-    // Si se encuentra un pedido activo, se actualiza su estado a inactivo y se registra la fecha de baja utilizando updateOne()
-    if (pedidoADarDeBaja) {
-      const bajaResult = await Pedido.updateOne(
-        { _id: pedidoADarDeBaja._id },
-        { 
-          // Se utiliza $set para actualizar los campos activo y fecha_baja del pedido
-          $set: { 
-            activo: false, 
-            fecha_baja: new Date() 
-          } 
+      try {
+        switch (opcion) {
+          case '1': {
+            // CREATE: los datos se solicitan al usuario; activo y fecha_baja usan los valores del esquema.
+            const nombre = await readline.question('Nombre: ');
+            // await readline.question() devuelve una promesa que se resuelve con la respuesta del usuario.
+            const telefono = await readline.question('Teléfono: ');
+            const calle = await readline.question('Calle: ');
+            const numero = await readline.question('Número: ');
+            const nuevoCliente = await Cliente.create({
+              nombre,
+              telefono,
+              direccion: { calle, numero }
+            });
+            console.log('Nuevo cliente registrado con ID:', nuevoCliente._id);
+            break;
+          }
+          case '2': {
+            // READ: muestra todos los clientes activos con sus ID.
+            const clientes = await Cliente.find({ activo: true });
+            // Si no hay clientes activos, se muestra un mensaje; de lo contrario, se listan los clientes.
+            if (clientes.length === 0) console.log('No hay clientes activos.');
+            else clientes.forEach(cliente => console.log(`ID: ${cliente._id}`, cliente));
+            break;
+          }
+          case '3': {
+            // UPDATE: reemplaza los datos del cliente activo indicado por su ID.
+            const id = (await readline.question('ID del cliente a actualizar: ')).trim();
+            const cliente = await Cliente.findOne({ _id: id, activo: true });
+            // Si no se encuentra un cliente activo con el ID proporcionado, se muestra un mensaje y se rompe el bucle.
+            if (!cliente) {
+              console.log('No se encontró un cliente activo con ese ID.');
+              break;
+            }
+            // Solicita al usuario los nuevos datos del cliente y actualiza el documento en la base de datos.
+            const nombre = await readline.question('Nombre: ');
+            const telefono = await readline.question('Teléfono: ');
+            const calle = await readline.question('Calle: ');
+            const numero = await readline.question('Número: ');
+            // Actualiza los campos del cliente con los nuevos valores proporcionados por el usuario.
+            cliente.set({ nombre, telefono, direccion: { calle, numero } });
+            // Guarda los cambios en la base de datos y muestra el cliente actualizado.
+            await cliente.save();
+            console.log('Cliente actualizado:', cliente);
+            break;
+          }
+          case '4': {
+            // DELETE: baja lógica por ID y muestra el documento modificado.
+            const id = (await readline.question('ID del cliente a dar de baja: ')).trim();
+            // findOneAndUpdate() busca un cliente activo por su ID y lo actualiza a inactivo, registrando la fecha de baja.
+            const cliente = await Cliente.findOneAndUpdate(
+              { _id: id, activo: true },
+              { $set: { activo: false, fecha_baja: new Date() } },
+              { returnDocument: 'after' }
+            );
+            // Si se encuentra un cliente activo con el ID proporcionado, se muestra el cliente dado de baja
+            if (cliente) console.log('Cliente dado de baja lógicamente:', cliente);
+            // de lo contrario, se indica que no se encontró.
+            else console.log('No se encontró un cliente activo con ese ID.');
+            break;
+          }
+          default:
+            console.log('Opción no válida.');
         }
-      );
-      // Se imprime en consola la confirmación de la baja lógica del pedido y su ID
-      console.log(`Pedido ${pedidoADarDeBaja._id} dado de baja lógicamente:`, bajaResult);
-    // Si no se encuentra ningún pedido activo, se imprime un mensaje indicando que no hay pedidos para dar de baja
-    } else {
-      console.log('No se encontraron pedidos activos para dar de baja.');
+      } catch (error) {
+        console.error('No se pudo completar la operación:', error.message);
+      }
     }
-
-  // Manejo de errores en caso de que ocurra algún problema durante la conexión o ejecución de las operaciones CRUD
   } catch (error) {
     console.error('Error en la conexión o ejecución:', error);
-  // Finalmente, se cierra la conexión a la base de datos para liberar recursos y evitar problemas de conexión
+    process.exitCode = 1;
   } finally {
+    // Cierra la entrada y la conexión a MongoDB al salir del programa.
+    readline.close();
     await mongoose.connection.close();
     console.log('\nConexión a MongoDB Atlas cerrada correctamente.');
   }
